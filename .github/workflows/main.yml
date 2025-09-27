@@ -11,60 +11,43 @@ jobs:
     steps:
       - name: Update & Install XRDP
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y xrdp xfce4 xfce4-goodies dbus-x11 x11-xserver-utils net-tools
-
-          # Enable XRDP service
+          sudo apt update -y
+          sudo apt install -y xrdp xfce4 xfce4-goodies
           sudo systemctl enable xrdp
           sudo systemctl start xrdp
 
-      - name: Create RDP User with Secure Password
+      - name: Create RDP User
         run: |
-          PASS=$(openssl rand -base64 12)
-          sudo useradd -m -s /bin/bash rdp
-          echo "rdp:$PASS" | sudo chpasswd
-          sudo usermod -aG sudo rdp
-
-          echo "RDP_USER=rdp" >> $GITHUB_ENV
-          echo "RDP_PASS=$PASS" >> $GITHUB_ENV
-
-      - name: Fix XRDP Config
-        run: |
-          echo "startxfce4" | sudo tee /home/rdp/.xsession
-          sudo chown rdp:rdp /home/rdp/.xsession
-
-          # Allow RDP port
-          sudo ufw allow 3389/tcp || true
-
-          # Restart XRDP
-          sudo systemctl restart xrdp
+          PASSWORD=$(openssl rand -base64 12)
+          sudo useradd -m -s /bin/bash rdpuser
+          echo "rdpuser:$PASSWORD" | sudo chpasswd
+          echo "RDP_CREDS=User: rdpuser | Password: $PASSWORD" >> $GITHUB_ENV
 
       - name: Install Tailscale
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh
           sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$GITHUB_RUN_ID
 
+      - name: Get Tailscale IP
+        run: |
           TS_IP=$(tailscale ip -4 | head -n1)
           echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
 
       - name: Verify RDP Accessibility
         run: |
           echo "Tailscale IP: $TAILSCALE_IP"
-          echo "Username: $RDP_USER"
-          echo "Password: $RDP_PASS"
+          nc -zv $TAILSCALE_IP 3389 || (echo "RDP port not accessible" && exit 1)
 
-          # Check XRDP is listening
-          sudo netstat -tulpn | grep 3389 || echo "XRDP not bound correctly"
-
-          # Test connectivity
-          nc -zv $TAILSCALE_IP 3389 || (echo "RDP port not reachable" && exit 1)
-
-      - name: Show RDP Connection Info
+      - name: Maintain Connection
         run: |
           echo -e "\n=== RDP ACCESS ==="
           echo "Address: $TAILSCALE_IP"
-          echo "Username: $RDP_USER"
-          echo "Password: $RDP_PASS"
+          echo "Username: rdpuser"
+          echo "Password: $(echo $RDP_CREDS)"
           echo "==================\n"
 
-          echo "⚡ Keep this job running until timeout (3600 minutes)."
+          # Keep runner active indefinitely
+          while true; do
+            echo "[$(date)] RDP Active - Use Ctrl+C in workflow to terminate"
+            sleep 300
+          done
