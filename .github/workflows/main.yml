@@ -12,7 +12,7 @@ jobs:
       - name: Update & Install XRDP
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y xrdp xfce4 xfce4-goodies dbus-x11 x11-xserver-utils
+          sudo apt-get install -y xrdp xfce4 xfce4-goodies dbus-x11 x11-xserver-utils net-tools
 
           # Enable XRDP service
           sudo systemctl enable xrdp
@@ -20,10 +20,7 @@ jobs:
 
       - name: Create RDP User with Secure Password
         run: |
-          # Generate secure random password
           PASS=$(openssl rand -base64 12)
-
-          # Create user "rdp"
           sudo useradd -m -s /bin/bash rdp
           echo "rdp:$PASS" | sudo chpasswd
           sudo usermod -aG sudo rdp
@@ -31,12 +28,22 @@ jobs:
           echo "RDP_USER=rdp" >> $GITHUB_ENV
           echo "RDP_PASS=$PASS" >> $GITHUB_ENV
 
+      - name: Fix XRDP Config
+        run: |
+          echo "startxfce4" | sudo tee /home/rdp/.xsession
+          sudo chown rdp:rdp /home/rdp/.xsession
+
+          # Allow RDP port
+          sudo ufw allow 3389/tcp || true
+
+          # Restart XRDP
+          sudo systemctl restart xrdp
+
       - name: Install Tailscale
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh
           sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$GITHUB_RUN_ID
 
-          # Save Tailscale IP
           TS_IP=$(tailscale ip -4 | head -n1)
           echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
 
@@ -46,10 +53,13 @@ jobs:
           echo "Username: $RDP_USER"
           echo "Password: $RDP_PASS"
 
-          # Test port 3389
+          # Check XRDP is listening
+          sudo netstat -tulpn | grep 3389 || echo "XRDP not bound correctly"
+
+          # Test connectivity
           nc -zv $TAILSCALE_IP 3389 || (echo "RDP port not reachable" && exit 1)
 
-      - name: Keep Runner Alive with Animation
+      - name: Show RDP Connection Info
         run: |
           echo -e "\n=== RDP ACCESS ==="
           echo "Address: $TAILSCALE_IP"
@@ -57,10 +67,4 @@ jobs:
           echo "Password: $RDP_PASS"
           echo "==================\n"
 
-          # Simple animation loop
-          while true; do
-            for i in "|" "/" "-" "\\"; do
-              echo -ne "\r[$(date)] RDP Active $i"
-              sleep 2
-            done
-          done
+          echo "⚡ Keep this job running until timeout (3600 minutes)."
