@@ -5,49 +5,49 @@ on:
 
 jobs:
   secure-rdp:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     timeout-minutes: 3600
 
     steps:
-      - name: Update & Install XRDP
+      - name: Configure RDP & Firewall
         run: |
-          sudo apt update -y
-          sudo apt install -y xrdp xfce4 xfce4-goodies
-          sudo systemctl enable xrdp
-          sudo systemctl start xrdp
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+          netsh advfirewall firewall delete rule name="RDP-Tailscale"
+          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
+          Restart-Service TermService -Force
 
       - name: Create RDP User
         run: |
-          PASSWORD=$(openssl rand -base64 12)
-          sudo useradd -m -s /bin/bash rdpuser
-          echo "rdpuser:$PASSWORD" | sudo chpasswd
-          echo "RDP_CREDS=User: rdpuser | Password: $PASSWORD" >> $GITHUB_ENV
+          $P=[char[]](33..126)|Get-Random -Count 12 -join ''; $S=ConvertTo-SecureString $P -AsPlainText -Force
+          New-LocalUser -Name RDP -Password $S -AccountNeverExpires
+          Add-LocalGroupMember Administrators,RDP; Add-LocalGroupMember "Remote Desktop Users","RDP"
+          echo "RDP_CREDS=User: RDP | Password: $P" >> $env:GITHUB_ENV
 
-      - name: Install Tailscale
+      - name: Install & Connect Tailscale
         run: |
-          curl -fsSL https://tailscale.com/install.sh | sh
-          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$GITHUB_RUN_ID
+          $url="https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $tmp="$env:TEMP\tailscale.msi"
+          Invoke-WebRequest $url -OutFile $tmp
+          Start-Process msiexec.exe -ArgumentList "/i","`"$tmp`"","/quiet","/norestart" -Wait
+          Remove-Item $tmp -Force
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+          $IP=$(& "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4 | Select-Object -First 1)
+          echo "TAILSCALE_IP=$IP" >> $env:GITHUB_ENV
 
-      - name: Get Tailscale IP
+      - name: Verify RDP
         run: |
-          TS_IP=$(tailscale ip -4 | head -n1)
-          echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
-
-      - name: Verify RDP Accessibility
-        run: |
-          echo "Tailscale IP: $TAILSCALE_IP"
-          nc -zv $TAILSCALE_IP 3389 || (echo "RDP port not accessible" && exit 1)
+          $r=Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
+          if (-not $r.TcpTestSucceeded) { Write-Error "RDP not reachable"; exit 1 }
+          Write-Host "RDP reachable at $env:TAILSCALE_IP"
 
       - name: Maintain Connection
         run: |
-          echo -e "\n=== RDP ACCESS ==="
-          echo "Address: $TAILSCALE_IP"
-          echo "Username: rdpuser"
-          echo "Password: $(echo $RDP_CREDS)"
-          echo "==================\n"
+          Write-Host "`n=== RDP ACCESS ==="
+          Write-Host "Address: $env:TAILSCALE_IP"
+          Write-Host "Username: RDP"
+          Write-Host "Password: $env:RDP_CREDS"
+          Write-Host "==================`n"
+          while ($true) { Write-Host "[$(Get-Date)] RDP Active"; Start-Sleep 300 }
 
-          # Keep runner active indefinitely
-          while true; do
-            echo "[$(date)] RDP Active - Use Ctrl+C in workflow to terminate"
-            sleep 300
-          done
