@@ -1,0 +1,66 @@
+name: RDP
+
+on:
+  workflow_dispatch:
+
+jobs:
+  secure-rdp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3600
+
+    steps:
+      - name: Update & Install XRDP
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y xrdp xfce4 xfce4-goodies dbus-x11 x11-xserver-utils
+
+          # Enable XRDP service
+          sudo systemctl enable xrdp
+          sudo systemctl start xrdp
+
+      - name: Create RDP User with Secure Password
+        run: |
+          # Generate secure random password
+          PASS=$(openssl rand -base64 12)
+
+          # Create user "rdp"
+          sudo useradd -m -s /bin/bash rdp
+          echo "rdp:$PASS" | sudo chpasswd
+          sudo usermod -aG sudo rdp
+
+          echo "RDP_USER=rdp" >> $GITHUB_ENV
+          echo "RDP_PASS=$PASS" >> $GITHUB_ENV
+
+      - name: Install Tailscale
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$GITHUB_RUN_ID
+
+          # Save Tailscale IP
+          TS_IP=$(tailscale ip -4 | head -n1)
+          echo "TAILSCALE_IP=$TS_IP" >> $GITHUB_ENV
+
+      - name: Verify RDP Accessibility
+        run: |
+          echo "Tailscale IP: $TAILSCALE_IP"
+          echo "Username: $RDP_USER"
+          echo "Password: $RDP_PASS"
+
+          # Test port 3389
+          nc -zv $TAILSCALE_IP 3389 || (echo "RDP port not reachable" && exit 1)
+
+      - name: Keep Runner Alive with Animation
+        run: |
+          echo -e "\n=== RDP ACCESS ==="
+          echo "Address: $TAILSCALE_IP"
+          echo "Username: $RDP_USER"
+          echo "Password: $RDP_PASS"
+          echo "==================\n"
+
+          # Simple animation loop
+          while true; do
+            for i in "|" "/" "-" "\\"; do
+              echo -ne "\r[$(date)] RDP Active $i"
+              sleep 2
+            done
+          done
